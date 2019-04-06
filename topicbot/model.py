@@ -1,93 +1,84 @@
 import torch
 import torch.nn as nn
-import torch.autograd as autograd
 from torch.autograd import Variable
-import torch.nn.functional as F
 
+class RNNModel(nn.Module):
+    """Container module with an encoder, a recurrent module, and a decoder."""
 
-class RNN(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super(RNN, self).__init__()
+    def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, tie_weights=False, width_classifier=0):
+        super(RNNModel, self).__init__()
+        self.drop = nn.Dropout(dropout)
+        self.encoder = nn.Embedding(ntoken, ninp)
+        self.width_classifier = width_classifier
+        if width_classifier > 0:
+            # self.classifier = nn.Linear(width_classifier, ntoken)  # bug w args, prob not needed
+            self.classifier = nn.Dropout(0)
+        else:
+            self.classifier = None
+        if rnn_type in ['LSTM', 'GRU']:
+            self.rnn = getattr(nn, rnn_type)(ninp + width_classifier, nhid, nlayers, dropout=dropout)
+        else:
+            try:
+                nonlinearity = {'RNN_TANH': 'tanh', 'RNN_RELU': 'relu'}[rnn_type]
+            except KeyError:
+                raise ValueError( """An invalid option for `--model` was supplied,
+                                 options are ['LSTM', 'GRU', 'RNN_TANH' or 'RNN_RELU']""")
+            self.rnn = nn.RNN(ninp + width_classifier, nhid, nlayers, nonlinearity=nonlinearity, dropout=dropout)
+        self.decoder = nn.Linear(nhid, ntoken)
 
-        self.hidden_size = hidden_size
+        # Optionally tie weights as in:
+        # "Using the Output Embedding to Improve Language Models" (Press & Wolf 2016)
+        # https://arxiv.org/abs/1608.05859
+        # and
+        # "Tying Word Vectors and Word Classifiers: A Loss Framework for Language Modeling" (Inan et al. 2016)
+        # https://arxiv.org/abs/1611.01462
+        if tie_weights:
+            if nhid != ninp:
+                raise ValueError('When using the tied flag, nhid must be equal to emsize')
+            self.decoder.weight = self.encoder.weight
 
-        self.i2h = nn.Linear(input_size + hidden_size, hidden_size)
-        self.i2o = nn.Linear(input_size + hidden_size, output_size)
-        self.softmax = nn.LogSoftmax()
+        self.init_weights()
 
-    def forward(self, input, hidden):
-        combined = torch.cat((input, hidden), 1)
-        hidden = self.i2h(combined)
-        output = self.i2o(combined)
-        output = self.softmax(output)
-        return output, hidden
+        self.rnn_type = rnn_type
+        self.nhid = nhid
+        self.nlayers = nlayers
 
-    def initHidden(self):
-        return Variable(torch.zeros(1, self.hidden_size))
+    def init_weights(self):
+        initrange = 0.1
+        self.encoder.weight.data.uniform_(-initrange, initrange)
+        self.decoder.bias.data.fill_(0)
+        self.decoder.weight.data.uniform_(-initrange, initrange)
+        #if self.classifier is not None:
+        #    self.classifier.bias.data.fill_(0)
+        #    self.classifier.weight.data.uniform_(-initrange, initrange)
 
+    def forward(self, input, hidden, classification=None):
+        emb = self.drop(self.encoder(input))
+        if self.classifier is not None and classification is not None:  # may need to change this later
+            # trans_classification = self.drop(self.classifier(classification))
+            # trans_classification = self.classifier(classification)
+            if len(classification.size()) < 3:  # needed if only one dimension of cdata
+                trans_classification = classification.unsqueeze(2)
+            else:
+                trans_classification = classification
+            # print(emb.size())
+            # print(trans_classification.size())
+            try:
+                combined = torch.cat((emb, trans_classification), 2)
+            except RuntimeError:
+                print('Internal Error: Size mismatch while combining in model', emb.size(), trans_classification.size())
+                raise
+            output, hidden = self.rnn(combined, hidden)
+        else:
+            output, hidden = self.rnn(emb, hidden)
+        output = self.drop(output)
+        decoded = self.decoder(output.view(output.size(0)*output.size(1), output.size(2)))
+        return decoded.view(output.size(0), output.size(1), decoded.size(1)), hidden
 
-class CharLSTM(nn.Module):
-
-    def __init__(self, input_dim, hidden_dim, output_dim, layers=1):
-        super(CharLSTM, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.layers = layers
-
-        self.lstm = nn.LSTM(input_dim, hidden_dim, layers, dropout=0.2)
-
-        # The linear layer that maps from hidden state space to output space
-        self.hidden2out = nn.Linear(hidden_dim, output_dim)
-
-        self.hidden = self.init_hidden()
-
-    def init_hidden(self):
-        # Before we've done anything, we dont have any hidden state.
-        # Refer to the Pytorch documentation to see exactly
-        # why they have this dimensionality.
-        # The axes semantics are (num_layers, minibatch_size, hidden_dim)
-        self.hidden = autograd.Variable(torch.zeros(self.layers, 1, self.hidden_dim))
-
-    def forward(self, char):
-        lstm_out, self.hidden = self.lstm(char, self.hidden)
-        out_space = self.hidden2out(lstm_out.view(len(sentence), -1))
-        out_scores = F.log_softmax(out_space)
-        return out_scores
-
-
-class LSTMTopic(nn.Module):
-
-    def __init__(self, embedding_dim, hidden_dim, vocab_size, output_dim, topic_dim):
-        super(LSTMTopic, self).__init__()
-        self.hidden_dim = hidden_dim
-
-        self.word_embeddings = nn.Embedding(vocab_size, embedding_dim)
-
-        # The LSTM takes word embeddings as inputs, and outputs hidden states
-        # with dimensionality hidden_dim.
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, 2, dropout=0.2)
-
-        # The linear layer that maps from hidden state space to output space
-        self.hidden2out = nn.Linear(hidden_dim, output_dim)
-
-        # The linear layer that maps from hidden state space to topic space
-        self.hidden2topic = nn.Linear(hidden_dim, topic_dim)
-        self.hidden = self.init_hidden()
-
-    def init_hidden(self):
-        # Before we've done anything, we dont have any hidden state.
-        # Refer to the Pytorch documentation to see exactly
-        # why they have this dimensionality.
-        # The axes semantics are (num_layers, minibatch_size, hidden_dim)
-        return (autograd.Variable(torch.zeros(1, 1, self.hidden_dim)),
-                autograd.Variable(torch.zeros(1, 1, self.hidden_dim)))
-
-    def forward(self, sentence):
-        embeds = self.word_embeddings(sentence)
-        lstm_out, self.hidden = self.lstm(
-            embeds.view(len(sentence), 1, -1), self.hidden)
-        out_space = self.hidden2out(lstm_out.view(len(sentence), -1))
-        out_scores = F.log_softmax(out_space)
-        topic_space = self.hidden2topic(lstm_out.view(len(sentence), -1))
-        topic_scores = F.log_softmax(topic_space)
-        # concat out and topic scores
-        return torch.cat(out_scores, topic_scores)
+    def init_hidden(self, bsz):
+        weight = next(self.parameters()).data
+        if self.rnn_type == 'LSTM':
+            return (Variable(weight.new(self.nlayers, bsz, self.nhid).zero_()),
+                    Variable(weight.new(self.nlayers, bsz, self.nhid).zero_()))
+        else:
+            return Variable(weight.new(self.nlayers, bsz, self.nhid).zero_())
