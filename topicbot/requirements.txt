@@ -1,1 +1,4 @@
+gensim
+numpy
+sentencepiece
 torch
