@@ -1,6 +1,7 @@
 # coding: utf-8
 import argparse
 import sys
+import os
 import time
 import math
 import numpy as np
@@ -47,9 +48,17 @@ parser.add_argument('--save', type=str,  default='model.pt',
                     help='path to save the final model')
 parser.add_argument('--output_loss', type=str, default='loss_data.json',
                     help='file to save the loss data')
+parser.add_argument('--output_vocab', type=str, default='',
+                    help='file to save the vocabulary')
 parser.add_argument('--topicnum', type=int, default=-1,
                     help='topic number (default -1 for none, 0 for all)')
 args = parser.parse_args()
+
+save_basepath = os.path.splitext(args.save)[0]
+if not args.output_vocab:
+    args.output_vocab = save_basepath + '_vocab.json'
+if not args.output_loss:
+    args.output_loss = save_basepath + '_loss.json'
 
 # Set the random seed manually for reproducibility.
 torch.manual_seed(args.seed)
@@ -64,6 +73,7 @@ if torch.cuda.is_available():
 ###############################################################################
 
 corpus = data.Corpus(args.data)
+corpus.save_dictionary(args.output_vocab)
 
 # Starting from sequential data, batchify arranges the dataset into columns.
 # For instance, with the alphabet as the sequence and batch size 4, we'd get
@@ -144,7 +154,7 @@ criterion = nn.CrossEntropyLoss()
 
 def repackage_hidden(h):
     """Wraps hidden states in new Variables, to detach them from their history."""
-    if type(h) == Variable:
+    if isinstance(h, Variable):
         return Variable(h.data)
     else:
         return tuple(repackage_hidden(v) for v in h)
@@ -183,7 +193,7 @@ def evaluate(data_source, cdata_source):
         output_flat = output.view(-1, ntokens)
         total_loss += len(data) * criterion(output_flat, targets).data
         hidden = repackage_hidden(hidden)
-    return total_loss[0] / len(data_source)
+    return total_loss.item() / len(data_source)
 
 
 def train():
@@ -205,7 +215,7 @@ def train():
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-        torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
         for p in model.parameters():
             p.data.add_(-lr, p.grad.data)
 
@@ -213,7 +223,7 @@ def train():
         ITERATION += 1
 
         if batch % args.log_interval == 0 and batch > 0:
-            cur_loss = total_loss[0] / args.log_interval
+            cur_loss = total_loss.item() / args.log_interval
             elapsed = time.time() - start_time
             print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '
                     'loss {:5.2f} | ppl {:8.2f}'.format(

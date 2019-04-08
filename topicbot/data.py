@@ -1,6 +1,7 @@
 import string
 import os
 import unicodedata
+import json
 from collections import Counter
 import numpy as np
 import torch
@@ -50,6 +51,25 @@ class Dictionary(object):
                 newidx += 1
         return new
 
+    def save_dictionary(self, filename):
+        data = {}
+        data['idx2word'] = self.idx2word
+        data['word2idx'] = self.word2idx
+        data['idx2cnt'] = self.idx2cnt
+        with open(filename, 'w') as fp:
+            json.dump(data, fp, indent=2)
+
+    @classmethod
+    def load_dictionary(cls, filename):
+        with open(filename, 'r') as fp:
+            data = json.load(fp)
+        self = cls()
+        self.idx2word = data['idx2word']
+        self.word2idx = data['word2idx']
+        self.idx2cnt = data['idx2cnt']
+        return self
+
+
 class Corpus(object):
     def __init__(self, path):
         self.dictionary = Dictionary()
@@ -65,6 +85,9 @@ class Corpus(object):
             self.test = None
         else:
             print('Error: corpus file does not exist ' + path)
+
+    def save_dictionary(self, filename):
+        self.dictionary.save_dictionary(filename)
 
     def tokenize(self, path):
         """Tokenizes a text file."""

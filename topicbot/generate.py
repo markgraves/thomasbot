@@ -1,26 +1,29 @@
-###############################################################################
-# Language Modeling on Penn Tree Bank
-#
-# This file generates new sentences sampled from the language model
-#
-###############################################################################
-
 import argparse
+import sys
 
 import torch
 from torch.autograd import Variable
+import sentencepiece as spm
 
 import data
 
 parser = argparse.ArgumentParser(description='PyTorch Wikitext-2 Language Model')
 
 # Model parameters.
-parser.add_argument('--data', type=str, default='./data/wikitext-2',
+parser.add_argument('--data', type=str, default='',  #deprecated
                     help='location of the data corpus')
+parser.add_argument('--datacorpus', type=str, default='',
+                    help='location of the data corpus')
+parser.add_argument('--vocab', type=str, default='',
+                    help='location of the data corpus vocab')
 parser.add_argument('--checkpoint', type=str, default='./model.pt',
-                    help='model checkpoint to use')
+                    help='torch model checkpoint to use')
+parser.add_argument('--bpemodel', type=str, default='./bpe.model',
+                    help='bpe model to use')
 parser.add_argument('--outf', type=str, default='generated.txt',
                     help='output file for generated text')
+parser.add_argument('--outfraw', type=str, default='generated-raw.txt',
+                    help='output file for generated text in raw (bpe) format')
 parser.add_argument('--words', type=int, default='1000',
                     help='number of words to generate')
 parser.add_argument('--seed', type=int, default=1111,
@@ -59,8 +62,22 @@ if args.cuda:
 else:
     model.cpu()
 
-corpus = data.Corpus(args.data)
-ntokens = len(corpus.dictionary)
+sp = spm.SentencePieceProcessor()
+sp.load_from_serialized_proto(open(args.bpemodel, 'rb').read())
+
+if args.vocab:
+    dictionary = data.Dictionary.load_dictionary(args.vocab)
+elif args.datacorpus:
+    corpus = data.Corpus(args.datacorpus)
+    dictionary = corpus.dictionary
+elif args.data:
+    corpus = data.Corpus(args.data)
+    dictionary = corpus.dictionary
+else:
+    print('Error: need vocabulary or corpus to obtain tokens')
+    sys.exit(1)
+
+ntokens = len(dictionary)
 hidden = model.init_hidden(1)
 try:
     width_classifier = model.width_classifier
@@ -70,28 +87,43 @@ input = Variable(torch.rand(1, 1).mul(ntokens).long(), volatile=True)
 if args.cuda:
     input.data = input.data.cuda()
 
-with open(args.outf, 'w') as outf:
-    for i in range(args.words):
-        if width_classifier == 0:
-            output, hidden = model(input, hidden)
-        else:
-            if args.topicnum == -1:
-                cdata = torch.zeros(1, 1, width_classifier)
-            elif args.topicnum == 0:
-                cdata = torch.rand(1, 1, width_classifier)
-            elif args.topicnum > 0:
-                cdata = torch.zeros(1, 1, width_classifier)
-                if width_classifier == 1:
-                    cdata[0][0][0] = 1  # topicnum could be actual topic num; not catching mismatch, then
-                else:
-                    cdata[0][0][args.topicnum - 1] = 1
-            output, hidden = model(input, hidden, Variable(cdata))
-        word_weights = output.squeeze().data.div(args.temperature).exp().cpu()
-        word_idx = torch.multinomial(word_weights, 1)[0]
-        input.data.fill_(word_idx)
-        word = corpus.dictionary.idx2word[word_idx]
-
-        outf.write(word + ('\n' if word in ['</s>', '<eos>'] else ' '))
-
-        if i % args.log_interval == 0:
-            print('| Generated {}/{} words'.format(i, args.words))
+end_tags = set(['</s>', '<eos>', '</question>', '</article>'])
+with open(args.outfraw, 'w') as outfraw:
+    with open(args.outf, 'w') as outf:
+        text = []
+        for i in range(args.words):
+            if width_classifier == 0:
+                output, hidden = model(input, hidden)
+            else:
+                if args.topicnum == -1:
+                    cdata = torch.zeros(1, 1, width_classifier)
+                elif args.topicnum == 0:
+                    cdata = torch.rand(1, 1, width_classifier)
+                elif args.topicnum > 0:
+                    cdata = torch.zeros(1, 1, width_classifier)
+                    if width_classifier == 1:
+                        cdata[0][0][0] = 1  # topicnum could be actual topic num; not catching mismatch, then
+                    else:
+                        cdata[0][0][args.topicnum - 1] = 1
+                output, hidden = model(input, hidden, Variable(cdata))
+            word_weights = output.squeeze().data.div(args.temperature).exp().cpu()
+            word_idx = torch.multinomial(word_weights, 1)[0]
+            input.data.fill_(word_idx)
+            word = dictionary.idx2word[word_idx]
+            if word not in end_tags:
+                outfraw.write(word + ' ')
+                #outfraw.write(word + ('\n' if word in end_tags else ' '))
+                text.append(word)
+            else:
+                outfraw.write(word + '\n')
+                decoded_text = sp.decode_pieces(text)
+                if decoded_text.strip():
+                    outf.write(decoded_text)
+                    outf.write('\n')
+                text = []
+            if i % args.log_interval == 0:
+                print('| Generated {}/{} words'.format(i, args.words))
+        if text:
+            outf.write(sp.decode_pieces(text))
+        outf.write('\n')
+        outfraw.write('\n')

@@ -1,3 +1,6 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
 import sys
 try:
     from sklearn.model_selection import train_test_split
@@ -23,7 +26,7 @@ def split3(infile, classfile=None):
                 else:
                     pass  # first time through
                 qtext = line  # start next question with the "QUESTION" text
-            elif line_strip.startswith('<s> ▁A R TI C L E') or line_strip.startswith('<article'>):  # only works w 512 vocab size or tagged
+            elif line_strip.startswith('<s> ▁A R TI C L E') or line_strip.startswith('<article>'):  # only works w 512 vocab size or tagged
                 if classfile:
                     qtext += '<data csv="%s"/>\n' % cinput.readline().strip()
                 qtext += line
@@ -33,7 +36,8 @@ def split3(infile, classfile=None):
         #save last question, if any text
         if qtext:
             questions.append(qtext)
-        cinput.close()
+        if classfile:
+            cinput.close()
             
     train, valid_test = train_test_split(questions, test_size=.25, random_state=20180103)
     valid, test = train_test_split(valid_test, test_size=.4, random_state=20180103)    # .15 valid, .10 test
