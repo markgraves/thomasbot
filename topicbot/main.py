@@ -26,6 +26,8 @@ parser.add_argument('--nlayers', type=int, default=2,
                     help='number of layers')
 parser.add_argument('--lr', type=float, default=20,
                     help='initial learning rate')
+parser.add_argument('--lrdecay', type=float, default=4,
+                    help='learning rate decay')
 parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
 parser.add_argument('--epochs', type=int, default=40,
@@ -170,14 +172,14 @@ def repackage_hidden(h):
 # by the batchify function. The chunks are along dimension 0, corresponding
 # to the seq_len dimension in the LSTM.
 
-def get_batch(source, source_cdata, i, evaluation=False):
+def get_batch(source, source_cdata, i):
     seq_len = min(args.bptt, len(source) - 1 - i)
-    data = Variable(source[i:i+seq_len], volatile=evaluation)
+    data = source[i:i+seq_len]
     if source_cdata is not None:
-        cdata = Variable(source_cdata[i:i+seq_len], volatile=evaluation)
+        cdata = source_cdata[i:i+seq_len]
     else:
         cdata = None
-    target = Variable(source[i+1:i+1+seq_len].view(-1))
+    target = source[i+1:i+1+seq_len].view(-1)
     return data, cdata, target
 
 
@@ -187,13 +189,14 @@ def evaluate(data_source, cdata_source):
     total_loss = 0
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(eval_batch_size)
-    for i in range(0, data_source.size(0) - 1, args.bptt):
-        data, cdata, targets = get_batch(data_source, cdata_source, i, evaluation=True)
-        output, hidden = model(data, hidden, cdata)
-        output_flat = output.view(-1, ntokens)
-        total_loss += len(data) * criterion(output_flat, targets).data
-        hidden = repackage_hidden(hidden)
-    return total_loss.item() / len(data_source)
+    with torch.no_grad():
+        for i in range(0, data_source.size(0) - 1, args.bptt):
+            data, cdata, targets = get_batch(data_source, cdata_source, i)
+            output, hidden = model(data, hidden, cdata)
+            output_flat = output.view(-1, ntokens)
+            total_loss += len(data) * criterion(output_flat, targets).item()
+            hidden = repackage_hidden(hidden)
+    return total_loss / (len(data_source) - 1)
 
 
 def train():
@@ -219,11 +222,11 @@ def train():
         for p in model.parameters():
             p.data.add_(-lr, p.grad.data)
 
-        total_loss += loss.data
+        total_loss += loss.item()
         ITERATION += 1
 
         if batch % args.log_interval == 0 and batch > 0:
-            cur_loss = total_loss.item() / args.log_interval
+            cur_loss = total_loss / args.log_interval
             elapsed = time.time() - start_time
             print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '
                     'loss {:5.2f} | ppl {:8.2f}'.format(
@@ -255,8 +258,8 @@ try:
         val_loss = evaluate(val_data, val_cdata)
         print('-' * 89)
         print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
-                'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time),
-                                           val_loss, math.exp(val_loss)))
+                'valid ppl {:8.2f} | lr {:9.6f}'.format(epoch, (time.time() - epoch_start_time),
+                                                        val_loss, math.exp(val_loss), lr))
         print('-' * 89)
         LOSS_DATA['val_loss_history'].append((epoch, ITERATION, lr, val_loss, math.exp(val_loss)))
         # Save the model if the validation loss is the best we've seen so far.
@@ -266,7 +269,7 @@ try:
             best_val_loss = val_loss
         else:
             # Anneal the learning rate if no improvement has been seen in the validation dataset.
-            lr /= 4.0
+            lr /= args.lrdecay
 except KeyboardInterrupt:
     print('-' * 89)
     print('Exiting from training early')
@@ -274,6 +277,7 @@ except KeyboardInterrupt:
 # Load the best saved model.
 with open(args.save, 'rb') as f:
     model = torch.load(f)
+    model.rnn.flatten_parameters()
 
 # Run on test data.
 test_loss = evaluate(test_data, test_cdata)
