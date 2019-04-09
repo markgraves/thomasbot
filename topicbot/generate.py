@@ -122,7 +122,15 @@ with open(args.outfraw, 'w') if args.outfraw else noop() as outfraw:
                         else:
                             cdata[0][0][args.topicnum - 1] = 1
                     output, hidden = model(input, hidden, Variable(cdata))
-                word_weights = output.squeeze().data.div(args.temperature).exp().cpu()
+                word_weights = output.squeeze().data.div(args.temperature).exp().cpu()   #per pytorch bug GH-322
+                # word_weights = output.squeeze().detach().div(args.temperature).exp().cpu()
+                prediction = output.squeeze().detach()
+                prediction = prediction.div(args.temperature)
+                # to prevent overflow problem with small temperature values, substract largest value from all
+                # this makes a vector in which the largest value is 0
+                max = torch.max(prediction)
+                prediction -= max
+                word_weights = prediction.exp().cpu()
                 word_idx = torch.multinomial(word_weights, 1)[0]
                 input.data.fill_(word_idx)
                 word = dictionary.idx2word[word_idx]
